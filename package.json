@@ -1,0 +1,13 @@
+{
+  "name": "prayer-times-api",
+  "version": "1.0.0",
+  "description": "Azure Function for Prayer Times API",
+  "scripts": {
+    "start": "func start",
+    "test": "echo \"No tests specified\""
+  },
+  "dependencies": {
+    "adhan": "^4.4.3",
+    "moment-timezone": "^0.5.43"
+  }
+}
