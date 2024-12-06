@@ -14,6 +14,7 @@ local.settings.json
 .env
 .env.local
 .env.*.local
+.env
 
 # IDE - VSCode
 .vscode/*

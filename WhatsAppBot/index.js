@@ -1,3 +1,5 @@
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const axios = require('axios');
 const adhan = require('adhan');
 const moment = require('moment-timezone');
@@ -59,7 +61,7 @@ const CITY_COORDINATES = {
 };
 
 module.exports = async function (context, req) {
-    context.log('WhatsApp webhook triggered');
+    context.log('🔄 WhatsApp webhook triggered');
 
     // Handle WhatsApp verification
     if (req.method === 'GET') {
@@ -67,18 +69,18 @@ module.exports = async function (context, req) {
         const token = req.query['hub.verify_token'];
         const challenge = req.query['hub.challenge'];
 
-        context.log(`Webhook verification request - Mode: ${mode}, Token: ${token}, Challenge: ${challenge}`);
-        context.log(`Expected token: ${process.env.WHATSAPP_VERIFY_TOKEN}`);
+        context.log(`🔒 Webhook verification request - Mode: ${mode}, Token: ${token}, Challenge: ${challenge}`);
+        context.log(`🔑 Expected token: ${process.env.WHATSAPP_VERIFY_TOKEN}`);
 
         if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-            context.log('Webhook verified successfully');
+            context.log('👍 Webhook verified successfully');
             context.res = {
                 status: 200,
                 body: parseInt(challenge)
             };
             return;
         }
-        context.log('Webhook verification failed');
+        context.log('🚫 Webhook verification failed');
         context.res = {
             status: 403,
             body: 'Forbidden'
@@ -89,22 +91,52 @@ module.exports = async function (context, req) {
     try {
         // Handle incoming messages
         const body = req.body;
+        context.log('🔄 Webhook request body:', JSON.stringify(body, null, 2));
         
+        if (!body || !body.object || !body.entry || !body.entry[0]) {
+            context.log.warn('❌ Invalid webhook body structure');
+            context.res = {
+                status: 400,
+                body: 'Invalid request body'
+            };
+            return;
+        }
+
         if (body.object === 'whatsapp_business_account') {
             const entry = body.entry[0];
-            const changes = entry.changes[0];
-            const value = changes.value;
+            if (!entry.changes || !entry.changes[0] || !entry.changes[0].value) {
+                context.log.warn('❌ Invalid entry structure');
+                context.res = {
+                    status: 400,
+                    body: 'Invalid entry structure'
+                };
+                return;
+            }
+
+            const value = entry.changes[0].value;
             
             if (value.messages && value.messages.length > 0) {
                 const message = value.messages[0];
+                if (!message.from || !message.text || !message.text.body) {
+                    context.log.warn('❌ Invalid message structure:', JSON.stringify(message));
+                    context.res = {
+                        status: 400,
+                        body: 'Invalid message structure'
+                    };
+                    return;
+                }
+
                 const from = message.from;
                 const messageBody = message.text.body.toLowerCase();
+                
+                context.log(`📱 Processing message from ${from}: ${messageBody}`);
 
                 let response = '';
                 let city = 'surabaya'; // Default city
                 let cityInput = ''; // Store original city input
 
                 if (messageBody.startsWith('jadwal')) {
+                    context.log('🕒 Processing jadwal command');
                     // Check if city is specified
                     const parts = messageBody.split(' ');
                     if (parts.length > 1) {
@@ -112,9 +144,11 @@ module.exports = async function (context, req) {
                         cityInput = parts.slice(1).join(' ');
                         // Convert to camelCase (e.g., "banda aceh" -> "bandaAceh")
                         city = cityInput.replace(/\s+(.)/g, (match, letter) => letter.toUpperCase());
+                        context.log(`🌆 City specified: ${cityInput} (${city})`);
                     }
 
                     if (!CITY_COORDINATES[city]) {
+                        context.log.warn(`❌ Invalid city requested: ${city}`);
                         // Format city names for display
                         const cityList = Object.keys(CITY_COORDINATES)
                             .map(c => c.replace(/([A-Z])/g, ' $1').toLowerCase())
@@ -123,23 +157,53 @@ module.exports = async function (context, req) {
                         
                         response = `Maaf, kota ${cityInput || city} belum tersedia.\nKota yang tersedia:\n${cityList}`;
                     } else {
+                        context.log(`🌍 Getting prayer times for ${city}`);
                         // Get prayer times
                         const prayerTimes = await getPrayerTimes(city);
                         response = formatPrayerTimes(prayerTimes, city);
+                        context.log(`✅ Prayer times retrieved for ${city}`);
                     }
                 } else {
+                    context.log('ℹ️ Sending help message');
                     response = 'Untuk melihat jadwal sholat, ketik:\n*jadwal* untuk Surabaya\natau\n*jadwal [nama_kota]* untuk kota lain\nContoh: jadwal banda aceh';
                 }
 
-                // Send response back to WhatsApp
-                await sendWhatsAppMessage(from, response);
-            }
-        }
+                context.log('📤 Sending response:', response);
 
-        return { statusCode: 200 };
+                try {
+                    const result = await sendWhatsAppMessage(from, response);
+                    context.log('✅ WhatsApp API response:', JSON.stringify(result));
+                    context.res = {
+                        status: 200,
+                        body: 'Message sent successfully'
+                    };
+                } catch (error) {
+                    context.log.error('❌ Failed to send WhatsApp message:', error);
+                    context.res = {
+                        status: 500,
+                        body: 'Failed to send message'
+                    };
+                }
+            } else {
+                context.log('ℹ️ No messages in the webhook');
+                context.res = {
+                    status: 200,
+                    body: 'No messages to process'
+                };
+            }
+        } else {
+            context.log.warn('❌ Unknown webhook object type:', body.object);
+            context.res = {
+                status: 400,
+                body: 'Unknown webhook object type'
+            };
+        }
     } catch (error) {
-        context.error('Error:', error);
-        return { statusCode: 500 };
+        context.log.error('❌ Error processing webhook:', error);
+        context.res = {
+            status: 500,
+            body: 'Internal Server Error'
+        };
     }
 };
 
@@ -182,28 +246,55 @@ function formatPrayerTimes(timings, city) {
 }
 
 async function sendWhatsAppMessage(to, message) {
-    // Skip WhatsApp API calls in test environment
-    if (process.env.NODE_ENV === 'test') {
-        console.log('\nResponse Message:', message, '\n');
-        return;
-    }
-
     const whatsappToken = process.env.WHATSAPP_TOKEN;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
-    await axios.post(
-        `https://graph.facebook.com/v12.0/${phoneNumberId}/messages`,
-        {
-            messaging_product: "whatsapp",
-            to: to,
-            type: "text",
-            text: { body: message }
-        },
-        {
+    if (!whatsappToken || !phoneNumberId) {
+        throw new Error('Missing WhatsApp configuration. Please check WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID environment variables.');
+    }
+
+    console.log('WhatsApp Configuration:', {
+        phoneNumberId,
+        tokenLength: whatsappToken.length,
+        to,
+        messageLength: message.length
+    });
+
+    try {
+        const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        console.log('Making request to:', url);
+
+        const response = await axios({
+            method: 'POST',
+            url: url,
             headers: {
                 'Authorization': `Bearer ${whatsappToken}`,
                 'Content-Type': 'application/json'
+            },
+            data: {
+                messaging_product: "whatsapp",
+                recipient_type: "individual",
+                to: to,
+                type: "text",
+                text: { 
+                    preview_url: false,
+                    body: message 
+                }
             }
-        }
-    );
+        });
+
+        console.log('WhatsApp API Response:', {
+            status: response.status,
+            data: response.data
+        });
+        return response.data;
+    } catch (error) {
+        console.error('WhatsApp API Error:', {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            message: error.message
+        });
+        throw error;
+    }
 }
