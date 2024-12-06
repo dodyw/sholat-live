@@ -6,6 +6,8 @@
     "start": "func start"
   },
   "dependencies": {
+    "@azure/data-tables": "^13.3.0",
+    "@azure/openai": "^2.0.0",
     "adhan": "^4.4.3",
     "axios": "^1.6.2",
     "dotenv": "^16.4.7",
