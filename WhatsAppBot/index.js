@@ -67,14 +67,23 @@ module.exports = async function (context, req) {
         const token = req.query['hub.verify_token'];
         const challenge = req.query['hub.challenge'];
 
-        // Replace 'your_verify_token' with your actual verify token
+        context.log(`Webhook verification request - Mode: ${mode}, Token: ${token}, Challenge: ${challenge}`);
+        context.log(`Expected token: ${process.env.WHATSAPP_VERIFY_TOKEN}`);
+
         if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-            return {
-                body: parseInt(challenge),
-                statusCode: 200
+            context.log('Webhook verified successfully');
+            context.res = {
+                status: 200,
+                body: parseInt(challenge)
             };
+            return;
         }
-        return { statusCode: 403 };
+        context.log('Webhook verification failed');
+        context.res = {
+            status: 403,
+            body: 'Forbidden'
+        };
+        return;
     }
 
     try {

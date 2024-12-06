@@ -1,14 +1,15 @@
 {
   "bindings": [
     {
-      "authLevel": "function",
+      "authLevel": "anonymous",
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
       "methods": [
         "get",
         "post"
-      ]
+      ],
+      "route": "whatsappbot"
     },
     {
       "type": "http",

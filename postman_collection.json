@@ -1,0 +1,80 @@
+{
+  "info": {
+    "_postman_id": "your-generated-id",
+    "name": "WhatsApp Bot API Tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Webhook Verification",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://sholatlive-api.azurewebsites.net/api/whatsappbot?hub.mode=subscribe&hub.verify_token=91241b3894f513145d6a8d1b951c5157&hub.challenge=12345",
+          "protocol": "https",
+          "host": ["sholatlive-api", "azurewebsites", "net"],
+          "path": ["api", "whatsappbot"],
+          "query": [
+            {
+              "key": "hub.mode",
+              "value": "subscribe"
+            },
+            {
+              "key": "hub.verify_token",
+              "value": "91241b3894f513145d6a8d1b951c5157"
+            },
+            {
+              "key": "hub.challenge",
+              "value": "12345"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Send Message - jadwal jakarta",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"object\": \"whatsapp_business_account\",\n  \"entry\": [{\n    \"changes\": [{\n      \"value\": {\n        \"messages\": [{\n          \"from\": \"123456789\",\n          \"text\": {\n            \"body\": \"jadwal jakarta\"\n          }\n        }]\n      }\n    }]\n  }]\n}"
+        },
+        "url": {
+          "raw": "https://sholatlive-api.azurewebsites.net/api/whatsappbot",
+          "protocol": "https",
+          "host": ["sholatlive-api", "azurewebsites", "net"],
+          "path": ["api", "whatsappbot"]
+        }
+      }
+    },
+    {
+      "name": "Send Message - help",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"object\": \"whatsapp_business_account\",\n  \"entry\": [{\n    \"changes\": [{\n      \"value\": {\n        \"messages\": [{\n          \"from\": \"123456789\",\n          \"text\": {\n            \"body\": \"help\"\n          }\n        }]\n      }\n    }]\n  }]\n}"
+        },
+        "url": {
+          "raw": "https://sholatlive-api.azurewebsites.net/api/whatsappbot",
+          "protocol": "https",
+          "host": ["sholatlive-api", "azurewebsites", "net"],
+          "path": ["api", "whatsappbot"]
+        }
+      }
+    }
+  ]
+}
