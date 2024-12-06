@@ -204,6 +204,45 @@ Maghrib: HH:mm
 Isya: HH:mm
 ```
 
+## WhatsApp Bot with OpenAI Integration
+
+The WhatsApp bot provides an interactive interface for users to check prayer times and get Islamic information.
+
+### Features
+
+- Natural language understanding powered by Azure OpenAI GPT-3.5
+- Smart prayer time lookups with city detection
+- Pre-calculated prayer times stored in Azure Table Storage
+- Next prayer time countdown and reminders
+
+### Environment Variables
+
+Required environment variables for the WhatsApp bot:
+
+```bash
+# WhatsApp Cloud API
+WHATSAPP_TOKEN=your_whatsapp_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY=your_api_key
+AZURE_OPENAI_DEPLOYMENT_NAME=your_deployment_name
+
+# Azure Storage
+AzureWebJobsStorage=your_storage_connection_string
+```
+
+### Setup
+
+1. Create Azure OpenAI resource with GPT-3.5 Turbo model
+2. Set up Azure Storage account
+3. Configure WhatsApp Business API
+4. Copy `.env.template` to `.env` and add credentials
+5. Run `npm install`
+6. Start with `func start`
+
 ## Installation and Development
 
 1. Clone the repository:

@@ -8,16 +8,31 @@ const { TableClient } = require("@azure/data-tables");
 // Function to get table client
 function getTableClient(context) {
     try {
-        if (!process.env.AzureWebJobsStorage) {
-            context.log.warn('AzureWebJobsStorage connection string not found');
+        const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
+        
+        if (!connectionString) {
+            context.log.error('Azure Storage connection string not found in environment variables');
             return null;
         }
-        return TableClient.fromConnectionString(
-            process.env.AzureWebJobsStorage,
-            "userMessages"
-        );
+
+        // Create table client for messages
+        if (this.messageTableClient === undefined) {
+            this.messageTableClient = TableClient.fromConnectionString(connectionString, "messages", {
+                allowInsecureConnection: true
+            });
+        }
+
+        // Create table client for prayer times
+        if (this.prayerTableClient === undefined) {
+            this.prayerTableClient = TableClient.fromConnectionString(connectionString, "prayertimes", {
+                allowInsecureConnection: true
+            });
+        }
+
+        // Return the appropriate table client based on the table name
+        return this.prayerTableClient;
     } catch (error) {
-        context.log.error('Failed to initialize Table Client:', error);
+        context.log.error('Error creating table client:', error);
         return null;
     }
 }
@@ -198,7 +213,356 @@ async function getAIResponse(userMessage, userId, context) {
         let prayerTimesInfo = '';
         let nextPrayer = null;
         if (city) {
-            const prayerTimes = await getPrayerTimes(city);
+            const prayerTimes = await getPrayerTimes(city, context);
+            nextPrayer = getNextPrayer(prayerTimes);
+            
+            prayerTimesInfo = `
+            Jadwal sholat hari ini untuk kota ${city.charAt(0).toUpperCase() + city.slice(1)}:
+            Tanggal: ${prayerTimes.date}
+            - Subuh: ${prayerTimes.fajr}
+            - Terbit: ${prayerTimes.sunrise}
+            - Dzuhur: ${prayerTimes.dhuhr}
+            - Ashar: ${prayerTimes.asr}
+            - Maghrib: ${prayerTimes.maghrib}
+            - Isya: ${prayerTimes.isha}
+            
+            Waktu sholat berikutnya: ${nextPrayer.name} pukul ${nextPrayer.time} (${nextPrayer.remaining} lagi)`;
+        }
+        
+        const systemMessage = {
+            role: "system",
+            content: `Anda adalah asisten virtual cerdas untuk layanan jadwal sholat.
+            ${prayerTimesInfo ? `\nInformasi Jadwal Sholat Terkini:\n${prayerTimesInfo}\n` : ''}
+            
+            Panduan penting:
+            - JANGAN PERNAH mengucapkan salam kecuali ${shouldGreet ? 'ini adalah pesan pertama setelah 3 jam' : 'JANGAN'}
+            - Jika user mengucapkan salam, jawab dengan "Waalaikumussalam"
+            - Ingat konteks percakapan sebelumnya dengan user
+            - Gunakan jadwal sholat yang sudah disediakan di atas (jika ada)
+            - Jika user bertanya tentang waktu sholat tertentu, berikan informasi spesifik dari jadwal
+            - Berikan informasi tambahan yang berguna, seperti waktu tersisa menuju sholat berikutnya
+            - Ingatkan jika waktu sholat sudah dekat (kurang dari 30 menit)
+            - Berikan respons yang personal dan relevan dengan percakapan
+            - Selalu berbicara dalam Bahasa Indonesia yang sopan dan formal
+            - Jika user menanyakan jadwal sholat dan belum ada informasi kota, tanyakan kota mereka
+            ${shouldGreet ? '- WAJIB mulai dengan "Assalamu\'alaikum"' : '- DILARANG mengucapkan salam'}`
+        };
+
+        const messages = [
+            systemMessage,
+            ...conversationHistory,
+            { role: "user", content: userMessage }
+        ];
+
+        const apiUrl = `${process.env.AZURE_OPENAI_ENDPOINT}/openai/deployments/${process.env.AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version=2023-05-15`;
+        context.log('🌐 API URL:', apiUrl);
+        context.log('🤖 Requesting AI response for:', userMessage);
+        context.log('👋 Should greet with salam:', shouldGreet);
+        
+        const response = await axios.post(
+            apiUrl,
+            {
+                messages: messages,
+                max_tokens: 800,
+                temperature: 0.7,
+                frequency_penalty: 0.5,
+                presence_penalty: 0.5,
+                top_p: 0.95,
+                stop: null
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'api-key': process.env.AZURE_OPENAI_API_KEY
+                }
+            }
+        );
+
+        const assistantResponse = response.data.choices[0].message.content;
+
+        // Store both user message and assistant response in history
+        await storeMessage(userId, "user", userMessage, context);
+        await storeMessage(userId, "assistant", assistantResponse, context);
+
+        return assistantResponse;
+    } catch (error) {
+        context.log.error('❌ Error details:', {
+            message: error.message,
+            response: error.response?.data,
+            status: error.response?.status,
+            headers: error.response?.headers
+        });
+        
+        if (error.response?.status === 429 || (error.message && error.message.toLowerCase().includes('rate limit'))) {
+            return 'Mohon maaf, layanan sedang sangat ramai. Untuk jadwal sholat, silakan ketik "jadwal [nama kota]" (contoh: jadwal jakarta)';
+        }
+
+        if (error.message && error.message.includes('No response from AI')) {
+            return 'Mohon maaf, layanan AI sedang tidak merespon. Untuk jadwal sholat, silakan ketik "jadwal [nama kota]" (contoh: jadwal jakarta)';
+        }
+        
+        return 'Mohon maaf, terjadi kendala teknis. Untuk jadwal sholat, silakan ketik "jadwal [nama kota]" (contoh: jadwal jakarta)';
+    }
+}
+
+// Function to pre-calculate and store prayer times
+async function storePrayerTimes(context) {
+    try {
+        const tableClient = getTableClient(context);
+        if (!tableClient) {
+            context.log.error('Table client not available for storing prayer times');
+            return;
+        }
+
+        const timezone = 'Asia/Jakarta';
+        const today = moment().tz(timezone);
+        context.log('Starting prayer times calculation for next 7 days');
+        
+        // Calculate for next 7 days
+        for (let i = 0; i < 7; i++) {
+            const date = today.clone().add(i, 'days');
+            const dateStr = date.format('YYYY-MM-DD');
+
+            // Calculate for each city
+            for (const [city, coords] of Object.entries(CITY_COORDINATES)) {
+                context.log(`Calculating prayer times for ${city} on ${dateStr}`);
+                const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
+                const params = adhan.CalculationMethod.MoonsightingCommittee();
+                params.madhab = adhan.Madhab.Shafi;
+                
+                const prayerTimes = new adhan.PrayerTimes(coordinates, date.toDate(), params);
+                
+                const timings = {
+                    fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
+                    sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
+                    dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
+                    asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
+                    maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
+                    isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm')
+                };
+
+                const rowKey = `${city}_${dateStr}`;
+                context.log(`Storing prayer times for ${rowKey}`);
+
+                // Store in Table Storage
+                await tableClient.upsertEntity({
+                    partitionKey: 'prayertimes',
+                    rowKey: rowKey,
+                    city: city,
+                    date: dateStr,
+                    ...timings,
+                    timestamp: new Date().toISOString()
+                });
+                
+                context.log(`Successfully stored prayer times for ${city} on ${dateStr}`);
+            }
+        }
+        context.log('Successfully pre-calculated and stored all prayer times');
+    } catch (error) {
+        context.log.error('Error pre-calculating prayer times:', error);
+        throw error; // Rethrow to see the error in function logs
+    }
+}
+
+// Function to get prayer times from storage
+async function getPrayerTimes(city, context, targetDate = null) {
+    try {
+        const tableClient = getTableClient(context);
+        if (!tableClient) {
+            context.log.error('Table client not available for fetching prayer times');
+            return null;
+        }
+
+        const date = targetDate || moment().tz('Asia/Jakarta').format('YYYY-MM-DD');
+        const rowKey = `${city}_${date}`;
+        context.log(`Fetching prayer times for ${rowKey}`);
+
+        try {
+            const entity = await tableClient.getEntity('prayertimes', rowKey);
+            context.log(`Found prayer times in storage for ${rowKey}:`, entity);
+            return {
+                date: entity.date,
+                fajr: entity.fajr,
+                sunrise: entity.sunrise,
+                dhuhr: entity.dhuhr,
+                asr: entity.asr,
+                maghrib: entity.maghrib,
+                isha: entity.isha
+            };
+        } catch (error) {
+            if (error.statusCode === 404) {
+                context.log(`Prayer times not found for ${rowKey}, calculating...`);
+                // If not found in storage, calculate and store
+                const coords = CITY_COORDINATES[city];
+                const prayerDate = moment(date).toDate();
+                const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
+                const params = adhan.CalculationMethod.MoonsightingCommittee();
+                params.madhab = adhan.Madhab.Shafi;
+                
+                const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
+                const timezone = 'Asia/Jakarta';
+                
+                const timings = {
+                    date: date,
+                    fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
+                    sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
+                    dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
+                    asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
+                    maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
+                    isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm')
+                };
+
+                // Store the calculated times
+                await tableClient.upsertEntity({
+                    partitionKey: 'prayertimes',
+                    rowKey: rowKey,
+                    city: city,
+                    ...timings,
+                    timestamp: new Date().toISOString()
+                });
+
+                context.log(`Calculated and stored new prayer times for ${rowKey}`);
+                return timings;
+            }
+            throw error;
+        }
+    } catch (error) {
+        context.log.error('Error getting prayer times:', error);
+        return null;
+    }
+}
+
+// Timer trigger function to update prayer times daily
+module.exports.updatePrayerTimes = async function(context) {
+    context.log('Timer trigger to update prayer times');
+    await storePrayerTimes(context);
+};
+
+// Function to get conversation history
+async function getConversationHistory(userId, context, maxMessages = 5) {
+    try {
+        const tableClient = getTableClient(context);
+        if (!tableClient) {
+            context.log.warn('Table client not available for conversation history');
+            return [];
+        }
+
+        const query = {
+            queryOptions: { filter: `PartitionKey eq 'conversation_${userId}'` }
+        };
+
+        let messages = [];
+        const iterator = tableClient.listEntities(query);
+        for await (const message of iterator) {
+            messages.push({
+                role: message.role,
+                content: message.content,
+                timestamp: new Date(message.timestamp)
+            });
+        }
+
+        // Sort by timestamp and get last N messages
+        messages.sort((a, b) => b.timestamp - a.timestamp);
+        return messages.slice(0, maxMessages).reverse();
+    } catch (error) {
+        context.log.error('Error fetching conversation history:', error);
+        return [];
+    }
+}
+
+// Function to store message in history
+async function storeMessage(userId, role, content, context) {
+    try {
+        const tableClient = getTableClient(context);
+        if (!tableClient) return;
+
+        const timestamp = new Date().toISOString();
+        const rowKey = `${timestamp}_${Math.random().toString(36).substr(2, 9)}`;
+
+        await tableClient.createEntity({
+            partitionKey: `conversation_${userId}`,
+            rowKey: rowKey,
+            role: role,
+            content: content,
+            timestamp: timestamp
+        });
+    } catch (error) {
+        context.log.error('Error storing message:', error);
+    }
+}
+
+// Function to extract city from conversation
+function extractCity(messages) {
+    // Look for city mentions in the last few messages
+    for (const message of messages.reverse()) {
+        const content = message.content.toLowerCase();
+        if (content.includes('kota') || content.includes('di')) {
+            for (const city in CITY_COORDINATES) {
+                if (content.includes(city)) {
+                    return city;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Function to get next prayer time
+function getNextPrayer(prayerTimes) {
+    const now = moment().tz('Asia/Jakarta');
+    const prayers = [
+        { name: 'Subuh', time: moment(prayerTimes.fajr, 'HH:mm') },
+        { name: 'Dzuhur', time: moment(prayerTimes.dhuhr, 'HH:mm') },
+        { name: 'Ashar', time: moment(prayerTimes.asr, 'HH:mm') },
+        { name: 'Maghrib', time: moment(prayerTimes.maghrib, 'HH:mm') },
+        { name: 'Isya', time: moment(prayerTimes.isha, 'HH:mm') }
+    ];
+
+    // Set all prayer times to today
+    prayers.forEach(prayer => {
+        prayer.time.year(now.year()).month(now.month()).date(now.date());
+    });
+
+    // Find next prayer
+    const nextPrayer = prayers.find(prayer => prayer.time.isAfter(now));
+    
+    if (nextPrayer) {
+        const duration = moment.duration(nextPrayer.time.diff(now));
+        const hours = Math.floor(duration.asHours());
+        const minutes = Math.floor(duration.asMinutes()) % 60;
+        return {
+            name: nextPrayer.name,
+            time: nextPrayer.time.format('HH:mm'),
+            remaining: `${hours} jam ${minutes} menit`
+        };
+    }
+
+    // If no next prayer today, return first prayer of tomorrow
+    const tomorrow = moment().tz('Asia/Jakarta').add(1, 'day');
+    return {
+        name: 'Subuh',
+        time: prayerTimes.fajr,
+        remaining: 'besok'
+    };
+}
+
+// Function to get AI response
+async function getAIResponse(userMessage, userId, context) {
+    try {
+        const shouldGreet = await shouldSendSalam(userId, context);
+        context.log('Should greet with salam:', shouldGreet);
+        
+        // Get recent conversation history
+        const conversationHistory = await getConversationHistory(userId, context);
+        
+        // Try to extract city from conversation
+        const city = extractCity([...conversationHistory, { content: userMessage }]);
+        
+        // Get prayer times if we have a city
+        let prayerTimesInfo = '';
+        let nextPrayer = null;
+        if (city) {
+            const prayerTimes = await getPrayerTimes(city, context);
             nextPrayer = getNextPrayer(prayerTimes);
             
             prayerTimesInfo = `
@@ -291,28 +655,71 @@ async function getAIResponse(userMessage, userId, context) {
 }
 
 // Function to get prayer times for a given city
-async function getPrayerTimes(city) {
-    const coords = CITY_COORDINATES[city];
-    const timezone = 'Asia/Jakarta';
-    const prayerDate = new Date();
-    
-    // Create coordinates
-    const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
-    
-    // Get prayer times
-    const params = adhan.CalculationMethod.MoonsightingCommittee();
-    params.madhab = adhan.Madhab.Shafi;
-    const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
+async function getPrayerTimes(city, context, targetDate = null) {
+    try {
+        const tableClient = getTableClient(context);
+        if (!tableClient) {
+            context.log.error('Table client not available for fetching prayer times');
+            return null;
+        }
 
-    return {
-        fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
-        sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
-        dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
-        asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
-        maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
-        isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm'),
-        date: moment(prayerDate).tz(timezone).format('YYYY-MM-DD')
-    };
+        const date = targetDate || moment().tz('Asia/Jakarta').format('YYYY-MM-DD');
+        const rowKey = `${city}_${date}`;
+        context.log(`Fetching prayer times for ${rowKey}`);
+
+        try {
+            const entity = await tableClient.getEntity('prayertimes', rowKey);
+            context.log(`Found prayer times in storage for ${rowKey}:`, entity);
+            return {
+                date: entity.date,
+                fajr: entity.fajr,
+                sunrise: entity.sunrise,
+                dhuhr: entity.dhuhr,
+                asr: entity.asr,
+                maghrib: entity.maghrib,
+                isha: entity.isha
+            };
+        } catch (error) {
+            if (error.statusCode === 404) {
+                context.log(`Prayer times not found for ${rowKey}, calculating...`);
+                // If not found in storage, calculate and store
+                const coords = CITY_COORDINATES[city];
+                const prayerDate = moment(date).toDate();
+                const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
+                const params = adhan.CalculationMethod.MoonsightingCommittee();
+                params.madhab = adhan.Madhab.Shafi;
+                
+                const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
+                const timezone = 'Asia/Jakarta';
+                
+                const timings = {
+                    date: date,
+                    fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
+                    sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
+                    dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
+                    asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
+                    maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
+                    isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm')
+                };
+
+                // Store the calculated times
+                await tableClient.upsertEntity({
+                    partitionKey: 'prayertimes',
+                    rowKey: rowKey,
+                    city: city,
+                    ...timings,
+                    timestamp: new Date().toISOString()
+                });
+
+                context.log(`Calculated and stored new prayer times for ${rowKey}`);
+                return timings;
+            }
+            throw error;
+        }
+    } catch (error) {
+        context.log.error('Error getting prayer times:', error);
+        return null;
+    }
 }
 
 module.exports = async function (context, req) {
@@ -411,7 +818,7 @@ module.exports = async function (context, req) {
                         } else {
                             context.log(`🌍 Getting prayer times for ${city}`);
                             // Get prayer times
-                            const prayerTimes = await getPrayerTimes(city);
+                            const prayerTimes = await getPrayerTimes(city, context);
                             response = formatPrayerTimes(prayerTimes, city);
                             context.log(`✅ Prayer times retrieved for ${city}`);
                         }
