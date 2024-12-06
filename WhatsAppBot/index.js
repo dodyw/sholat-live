@@ -127,6 +127,61 @@ async function storeMessage(userId, role, content, context) {
     }
 }
 
+// Function to extract city from conversation
+function extractCity(messages) {
+    // Look for city mentions in the last few messages
+    for (const message of messages.reverse()) {
+        const content = message.content.toLowerCase();
+        if (content.includes('kota') || content.includes('di')) {
+            for (const city in CITY_COORDINATES) {
+                if (content.includes(city)) {
+                    return city;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Function to get next prayer time
+function getNextPrayer(prayerTimes) {
+    const now = moment().tz('Asia/Jakarta');
+    const prayers = [
+        { name: 'Subuh', time: moment(prayerTimes.fajr, 'HH:mm') },
+        { name: 'Dzuhur', time: moment(prayerTimes.dhuhr, 'HH:mm') },
+        { name: 'Ashar', time: moment(prayerTimes.asr, 'HH:mm') },
+        { name: 'Maghrib', time: moment(prayerTimes.maghrib, 'HH:mm') },
+        { name: 'Isya', time: moment(prayerTimes.isha, 'HH:mm') }
+    ];
+
+    // Set all prayer times to today
+    prayers.forEach(prayer => {
+        prayer.time.year(now.year()).month(now.month()).date(now.date());
+    });
+
+    // Find next prayer
+    const nextPrayer = prayers.find(prayer => prayer.time.isAfter(now));
+    
+    if (nextPrayer) {
+        const duration = moment.duration(nextPrayer.time.diff(now));
+        const hours = Math.floor(duration.asHours());
+        const minutes = Math.floor(duration.asMinutes()) % 60;
+        return {
+            name: nextPrayer.name,
+            time: nextPrayer.time.format('HH:mm'),
+            remaining: `${hours} jam ${minutes} menit`
+        };
+    }
+
+    // If no next prayer today, return first prayer of tomorrow
+    const tomorrow = moment().tz('Asia/Jakarta').add(1, 'day');
+    return {
+        name: 'Subuh',
+        time: prayerTimes.fajr,
+        remaining: 'besok'
+    };
+}
+
 // Function to get AI response
 async function getAIResponse(userMessage, userId, context) {
     try {
@@ -136,21 +191,45 @@ async function getAIResponse(userMessage, userId, context) {
         // Get recent conversation history
         const conversationHistory = await getConversationHistory(userId, context);
         
+        // Try to extract city from conversation
+        const city = extractCity([...conversationHistory, { content: userMessage }]);
+        
+        // Get prayer times if we have a city
+        let prayerTimesInfo = '';
+        let nextPrayer = null;
+        if (city) {
+            const prayerTimes = await getPrayerTimes(city);
+            nextPrayer = getNextPrayer(prayerTimes);
+            
+            prayerTimesInfo = `
+            Jadwal sholat hari ini untuk kota ${city.charAt(0).toUpperCase() + city.slice(1)}:
+            Tanggal: ${prayerTimes.date}
+            - Subuh: ${prayerTimes.fajr}
+            - Terbit: ${prayerTimes.sunrise}
+            - Dzuhur: ${prayerTimes.dhuhr}
+            - Ashar: ${prayerTimes.asr}
+            - Maghrib: ${prayerTimes.maghrib}
+            - Isya: ${prayerTimes.isha}
+            
+            Waktu sholat berikutnya: ${nextPrayer.name} pukul ${nextPrayer.time} (${nextPrayer.remaining} lagi)`;
+        }
+        
         const systemMessage = {
             role: "system",
             content: `Anda adalah asisten virtual cerdas untuk layanan jadwal sholat.
+            ${prayerTimesInfo ? `\nInformasi Jadwal Sholat Terkini:\n${prayerTimesInfo}\n` : ''}
+            
             Panduan penting:
             - JANGAN PERNAH mengucapkan salam kecuali ${shouldGreet ? 'ini adalah pesan pertama setelah 3 jam' : 'JANGAN'}
             - Jika user mengucapkan salam, jawab dengan "Waalaikumussalam"
             - Ingat konteks percakapan sebelumnya dengan user
-            - Jika user sudah menyebutkan kota sebelumnya, gunakan informasi tersebut
+            - Gunakan jadwal sholat yang sudah disediakan di atas (jika ada)
+            - Jika user bertanya tentang waktu sholat tertentu, berikan informasi spesifik dari jadwal
+            - Berikan informasi tambahan yang berguna, seperti waktu tersisa menuju sholat berikutnya
+            - Ingatkan jika waktu sholat sudah dekat (kurang dari 30 menit)
             - Berikan respons yang personal dan relevan dengan percakapan
-            - Bantu mencari kota untuk jadwal sholat
-            - Jelaskan waktu sholat dengan bahasa sederhana
-            - Jawab pertanyaan umum tentang sholat
             - Selalu berbicara dalam Bahasa Indonesia yang sopan dan formal
-            - Jika user menanyakan jadwal sholat dan belum menyebutkan kota, tanyakan kota mereka
-            - JANGAN memberikan jadwal sholat spesifik
+            - Jika user menanyakan jadwal sholat dan belum ada informasi kota, tanyakan kota mereka
             ${shouldGreet ? '- WAJIB mulai dengan "Assalamu\'alaikum"' : '- DILARANG mengucapkan salam'}`
         };
 
@@ -209,6 +288,31 @@ async function getAIResponse(userMessage, userId, context) {
         
         return 'Mohon maaf, terjadi kendala teknis. Untuk jadwal sholat, silakan ketik "jadwal [nama kota]" (contoh: jadwal jakarta)';
     }
+}
+
+// Function to get prayer times for a given city
+async function getPrayerTimes(city) {
+    const coords = CITY_COORDINATES[city];
+    const timezone = 'Asia/Jakarta';
+    const prayerDate = new Date();
+    
+    // Create coordinates
+    const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
+    
+    // Get prayer times
+    const params = adhan.CalculationMethod.MoonsightingCommittee();
+    params.madhab = adhan.Madhab.Shafi;
+    const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
+
+    return {
+        fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
+        sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
+        dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
+        asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
+        maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
+        isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm'),
+        date: moment(prayerDate).tz(timezone).format('YYYY-MM-DD')
+    };
 }
 
 module.exports = async function (context, req) {
@@ -358,30 +462,6 @@ module.exports = async function (context, req) {
         };
     }
 };
-
-async function getPrayerTimes(city) {
-    const coords = CITY_COORDINATES[city];
-    const timezone = 'Asia/Jakarta';
-    const prayerDate = new Date();
-    
-    // Create coordinates
-    const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
-    
-    // Get prayer times
-    const params = adhan.CalculationMethod.MoonsightingCommittee();
-    params.madhab = adhan.Madhab.Shafi;
-    const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
-
-    return {
-        fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
-        sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
-        dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
-        asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
-        maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
-        isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm'),
-        date: moment(prayerDate).tz(timezone).format('YYYY-MM-DD')
-    };
-}
 
 function formatPrayerTimes(timings, city) {
     const date = moment().tz('Asia/Jakarta').format('dddd, D MMMM YYYY');
