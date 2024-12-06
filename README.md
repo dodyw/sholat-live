@@ -95,6 +95,115 @@ Response:
 }
 ```
 
+### 3. WhatsApp Bot
+
+A WhatsApp chatbot that provides prayer times for 50 major Indonesian cities. Users can get prayer times by sending messages like "jadwal" (for Surabaya) or "jadwal [city]" (e.g., "jadwal medan" or "jadwal banda aceh").
+
+#### Setup WhatsApp Bot
+
+1. Create Meta Business & Developer Accounts:
+   ```
+   1. Create account at business.facebook.com
+   2. Create developer account at developers.facebook.com
+   ```
+
+2. Create WhatsApp Business App:
+   ```
+   1. Go to developers.facebook.com
+   2. Create App > Choose Business
+   3. Add WhatsApp product to your app
+   4. Set up WhatsApp messaging
+   ```
+
+3. Get Required Credentials:
+
+   a. WhatsApp Phone Number ID:
+   ```
+   1. Go to WhatsApp > Getting Started
+   2. Find your Phone Number ID under API Setup
+   ```
+
+   b. WhatsApp Token:
+   ```
+   1. Go to System Users in Business Settings
+   2. Create System User with WhatsApp Admin role
+   3. Generate token with whatsapp_business_messaging permission
+   ```
+
+   c. Verify Token:
+   ```
+   1. Generate a random string (e.g., using openssl):
+      openssl rand -hex 16
+   2. Save this as your WHATSAPP_VERIFY_TOKEN
+   ```
+
+4. Configure Azure Function:
+   ```
+   1. Go to Azure Portal > Your Function App
+   2. Add these Application Settings:
+      WHATSAPP_VERIFY_TOKEN=your_verify_token
+      WHATSAPP_TOKEN=your_whatsapp_token
+      WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+   ```
+
+5. Set up Webhook:
+   ```
+   1. In Meta Developers Portal > WhatsApp > Configuration
+   2. Add Callback URL (your Azure Function URL)
+   3. Add Verify Token (same as WHATSAPP_VERIFY_TOKEN)
+   4. Select webhooks: messages, message_status
+   ```
+
+#### Testing Locally
+
+1. Install dependencies:
+```bash
+npm install
+```
+
+2. Run test script:
+```bash
+NODE_ENV=test node WhatsAppBot/test.js
+```
+
+#### Supported Cities
+
+The bot supports 50 major Indonesian cities including:
+- Java: Jakarta, Surabaya, Bandung, Semarang, Yogyakarta, etc.
+- Sumatra: Medan, Palembang, Banda Aceh, Padang, etc.
+- Kalimantan: Pontianak, Banjarmasin, Samarinda, etc.
+- Sulawesi: Makassar, Manado, Palu, etc.
+- Others: Denpasar, Ambon, Jayapura, etc.
+
+Type "jadwal" to see the complete list of supported cities.
+
+#### Usage Examples
+
+1. Get prayer times for Surabaya:
+```
+jadwal
+```
+
+2. Get prayer times for specific city:
+```
+jadwal medan
+jadwal banda aceh
+jadwal yogyakarta
+```
+
+Response format:
+```
+*Jadwal Sholat [City]*
+[Day], [Date]
+
+Subuh: HH:mm
+Terbit: HH:mm
+Dzuhur: HH:mm
+Ashar: HH:mm
+Maghrib: HH:mm
+Isya: HH:mm
+```
+
 ## Installation and Development
 
 1. Clone the repository:

@@ -1,13 +1,13 @@
 {
-  "name": "prayer-times-api",
+  "name": "sholat-live",
   "version": "1.0.0",
-  "description": "Azure Function for Prayer Times API",
+  "description": "Prayer times WhatsApp bot",
   "scripts": {
-    "start": "func start",
-    "test": "echo \"No tests specified\""
+    "start": "func start"
   },
   "dependencies": {
     "adhan": "^4.4.3",
+    "axios": "^1.6.2",
     "moment-timezone": "^0.5.43"
   }
 }
