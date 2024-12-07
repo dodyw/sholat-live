@@ -117,6 +117,29 @@ function extractCityAddRequest(message) {
     return null;
 }
 
+// Function to get timezone from coordinates
+async function getTimezone(lat, lon) {
+    try {
+        const response = await axios.get(`http://api.timezonedb.com/v2.1/get-time-zone`, {
+            params: {
+                key: process.env.TIMEZONE_DB_KEY,
+                format: 'json',
+                by: 'position',
+                lat: lat,
+                lng: lon
+            }
+        });
+
+        if (response.data && response.data.status === 'OK') {
+            return response.data.zoneName; // Returns format like 'Asia/Tokyo'
+        }
+        return null;
+    } catch (error) {
+        console.error('Error getting timezone:', error);
+        return null;
+    }
+}
+
 // Function to verify and get city coordinates using OpenStreetMap Nominatim
 async function verifyCityAndGetCoordinates(cityName) {
     try {
@@ -127,14 +150,12 @@ async function verifyCityAndGetCoordinates(cityName) {
                 format: 'json',
                 limit: 1,
                 addressdetails: 1,
-                featuretype: 'city'  // Specifically look for cities
+                featuretype: 'city'
             },
             headers: {
                 'User-Agent': 'SholatLive/1.0'
             }
         });
-
-        console.log('Nominatim response:', JSON.stringify(response.data, null, 2));
 
         if (response.data && response.data.length > 0) {
             const result = response.data[0];
@@ -143,11 +164,17 @@ async function verifyCityAndGetCoordinates(cityName) {
             // Accept more location types for major cities
             if (address.city || address.town || address.county || address.municipality || 
                 address.state || address.province || address.region) {
+                
+                const lat = parseFloat(result.lat);
+                const lon = parseFloat(result.lon);
+                const timezone = await getTimezone(lat, lon);
+
                 return {
                     name: cityName.toLowerCase(),
                     displayName: address.city || address.town || address.state || result.name,
-                    latitude: parseFloat(result.lat),
-                    longitude: parseFloat(result.lon),
+                    latitude: lat,
+                    longitude: lon,
+                    timezone: timezone || 'Asia/Jakarta', // Fallback to Jakarta if timezone lookup fails
                     aliases: [cityName.toLowerCase()],
                     type: address.city ? 'city' : 
                           address.town ? 'town' : 
@@ -159,9 +186,13 @@ async function verifyCityAndGetCoordinates(cityName) {
 
             // Fallback for major cities that might be categorized differently
             const knownCities = {
-                'tokyo': { lat: 35.6762, lon: 139.6503, name: 'Tokyo' },
-                'beijing': { lat: 39.9042, lon: 116.4074, name: 'Beijing' },
-                'hongkong': { lat: 22.3193, lon: 114.1694, name: 'Hong Kong' }
+                'tokyo': { lat: 35.6762, lon: 139.6503, name: 'Tokyo', timezone: 'Asia/Tokyo' },
+                'beijing': { lat: 39.9042, lon: 116.4074, name: 'Beijing', timezone: 'Asia/Shanghai' },
+                'hongkong': { lat: 22.3193, lon: 114.1694, name: 'Hong Kong', timezone: 'Asia/Hong_Kong' },
+                'singapore': { lat: 1.3521, lon: 103.8198, name: 'Singapore', timezone: 'Asia/Singapore' },
+                'seoul': { lat: 37.5665, lon: 126.9780, name: 'Seoul', timezone: 'Asia/Seoul' },
+                'bangkok': { lat: 13.7563, lon: 100.5018, name: 'Bangkok', timezone: 'Asia/Bangkok' },
+                'kualalumpur': { lat: 3.1390, lon: 101.6869, name: 'Kuala Lumpur', timezone: 'Asia/Kuala_Lumpur' }
             };
 
             const normalizedCity = cityName.toLowerCase().replace(/\s+/g, '');
@@ -172,6 +203,7 @@ async function verifyCityAndGetCoordinates(cityName) {
                     displayName: city.name,
                     latitude: city.lat,
                     longitude: city.lon,
+                    timezone: city.timezone,
                     aliases: [normalizedCity],
                     type: 'city'
                 };
@@ -211,6 +243,24 @@ async function addNewCity(cityData) {
     }
 }
 
+// Function to format prayer times
+function formatPrayerTimes(prayerTimes, cityName, timezone) {
+    const format = (date) => {
+        return moment(date).tz(timezone).format('HH:mm');
+    };
+
+    return `Jadwal Sholat ${cityName} hari ini:
+
+🌅 Subuh: ${format(prayerTimes.fajr)}
+🌞 Terbit: ${format(prayerTimes.sunrise)}
+☀️ Dzuhur: ${format(prayerTimes.dhuhr)}
+🌅 Ashar: ${format(prayerTimes.asr)}
+🌄 Maghrib: ${format(prayerTimes.maghrib)}
+🌙 Isya: ${format(prayerTimes.isha)}
+
+Waktu dalam zona waktu: ${timezone}`;
+}
+
 // Function to get prayer times
 async function getPrayerTimes(cityName) {
     let coordinates = await getCityCoordinates(cityName);
@@ -235,24 +285,12 @@ async function getPrayerTimes(cityName) {
     
     return {
         cityName: coordinates.displayName || cityName,
-        times: prayerTimes
+        times: prayerTimes,
+        timezone: coordinates.timezone || 'Asia/Jakarta'
     };
 }
 
-function formatPrayerTimes(prayerTimes, cityName) {
-    const date = moment().tz('Asia/Jakarta').format('dddd, D MMMM YYYY');
-    cityName = cityName.charAt(0).toUpperCase() + cityName.slice(1);
-
-    return `*Jadwal Sholat ${cityName}*\n` +
-           `${date}\n\n` +
-           `Subuh: ${moment(prayerTimes.fajr).tz('Asia/Jakarta').format('HH:mm')}\n` +
-           `Terbit: ${moment(prayerTimes.sunrise).tz('Asia/Jakarta').format('HH:mm')}\n` +
-           `Dzuhur: ${moment(prayerTimes.dhuhr).tz('Asia/Jakarta').format('HH:mm')}\n` +
-           `Ashar: ${moment(prayerTimes.asr).tz('Asia/Jakarta').format('HH:mm')}\n` +
-           `Maghrib: ${moment(prayerTimes.maghrib).tz('Asia/Jakarta').format('HH:mm')}\n` +
-           `Isya: ${moment(prayerTimes.isha).tz('Asia/Jakarta').format('HH:mm')}`;
-}
-
+// Function to send WhatsApp message
 async function sendWhatsAppMessage(to, message) {
     const whatsappToken = process.env.WHATSAPP_TOKEN;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -354,7 +392,7 @@ module.exports = async function (context, req) {
                     if (!prayerTimes) {
                         responseMessage = `Mohon maaf, "${extractedCity}" bukan merupakan nama kota yang valid. Silakan periksa kembali nama kota yang Anda masukkan.`;
                     } else {
-                        responseMessage = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName);
+                        responseMessage = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName, prayerTimes.timezone);
                     }
                 }
 

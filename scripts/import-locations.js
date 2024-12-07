@@ -1,5 +1,34 @@
-require('dotenv').config();
+require('dotenv').config({ path: '../.env' });
 const { MongoClient } = require('mongodb');
+const axios = require('axios');
+
+// Function to add delay between API calls
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Function to get timezone from coordinates
+async function getTimezone(lat, lon) {
+    try {
+        const response = await axios.get(`http://api.timezonedb.com/v2.1/get-time-zone`, {
+            params: {
+                key: process.env.TIMEZONE_DB_KEY,
+                format: 'json',
+                by: 'position',
+                lat: lat,
+                lng: lon
+            }
+        });
+
+        if (response.data && response.data.status === 'OK') {
+            return response.data.zoneName;
+        }
+        return 'Asia/Jakarta'; // Default to Jakarta timezone
+    } catch (error) {
+        console.error('Error getting timezone:', error);
+        return 'Asia/Jakarta';
+    }
+}
 
 const cities = [
     // Java
@@ -206,7 +235,7 @@ const cities = [
         aliases: ['kdi']
     },
 
-    // Others
+    // Others Indonesia
     {
         name: 'denpasar',
         displayName: 'Denpasar',
@@ -248,38 +277,103 @@ const cities = [
         latitude: 0.7833,
         longitude: 127.3667,
         aliases: ['tnt']
+    },
+
+    // International Cities with hardcoded timezones
+    {
+        name: 'tokyo',
+        displayName: 'Tokyo',
+        latitude: 35.6762,
+        longitude: 139.6503,
+        timezone: 'Asia/Tokyo',
+        aliases: ['tokyo', 'tokyo city']
+    },
+    {
+        name: 'beijing',
+        displayName: 'Beijing',
+        latitude: 39.9042,
+        longitude: 116.4074,
+        timezone: 'Asia/Shanghai',
+        aliases: ['beijing', 'peking']
+    },
+    {
+        name: 'hongkong',
+        displayName: 'Hong Kong',
+        latitude: 22.3193,
+        longitude: 114.1694,
+        timezone: 'Asia/Hong_Kong',
+        aliases: ['hong kong', 'hk']
+    },
+    {
+        name: 'singapore',
+        displayName: 'Singapore',
+        latitude: 1.3521,
+        longitude: 103.8198,
+        timezone: 'Asia/Singapore',
+        aliases: ['singapore', 'singapura', 'sg']
+    },
+    {
+        name: 'seoul',
+        displayName: 'Seoul',
+        latitude: 37.5665,
+        longitude: 126.9780,
+        timezone: 'Asia/Seoul',
+        aliases: ['seoul', 'korea']
+    },
+    {
+        name: 'bangkok',
+        displayName: 'Bangkok',
+        latitude: 13.7563,
+        longitude: 100.5018,
+        timezone: 'Asia/Bangkok',
+        aliases: ['bangkok', 'krung thep']
+    },
+    {
+        name: 'kualalumpur',
+        displayName: 'Kuala Lumpur',
+        latitude: 3.1390,
+        longitude: 101.6869,
+        timezone: 'Asia/Kuala_Lumpur',
+        aliases: ['kuala lumpur', 'kl']
     }
 ];
 
 async function importLocations() {
+    const client = new MongoClient(process.env.MONGODB_URI);
+    
     try {
-        // Load environment variables from parent directory's .env file
-        require('dotenv').config({ path: '../.env' });
-
-        if (!process.env.MONGODB_URI) {
-            throw new Error('MONGODB_URI environment variable is not set');
+        await client.connect();
+        const db = client.db();
+        const collection = db.collection('cities');
+        
+        // Clear existing data
+        await collection.deleteMany({});
+        
+        // Import each city with timezone
+        for (const city of cities) {
+            // Get timezone for the city
+            await delay(1100); // Wait 1.1 seconds between API calls to avoid rate limiting
+            const timezone = city.timezone || await getTimezone(city.latitude, city.longitude);
+            console.log(`Processing ${city.displayName} (${timezone})`);
+            
+            // Add the city to the database with timezone
+            await collection.insertOne({
+                name: city.name,
+                displayName: city.displayName,
+                latitude: city.latitude,
+                longitude: city.longitude,
+                timezone: timezone,
+                aliases: city.aliases || []
+            });
         }
-
-        // Connect to MongoDB
-        const client = await MongoClient.connect(process.env.MONGODB_URI);
-        const db = client.db('sholat-live');
-        const locations = db.collection('locations');
-
-        // Drop existing collection if it exists
-        await locations.drop().catch(() => console.log('Collection does not exist, creating new one...'));
-
-        // Create indexes
-        await locations.createIndex({ name: 1 }, { unique: true });
-        await locations.createIndex({ aliases: 1 });
-
-        // Insert all cities
-        const result = await locations.insertMany(cities);
-        console.log(`Successfully imported ${result.insertedCount} cities`);
-
-        // Close connection
-        await client.close();
+        
+        const count = await collection.countDocuments();
+        console.log(`Successfully imported ${count} cities`);
+        
     } catch (error) {
         console.error('Error importing locations:', error);
+    } finally {
+        await client.close();
     }
 }
 
