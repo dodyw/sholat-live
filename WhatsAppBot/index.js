@@ -50,29 +50,29 @@ function extractCityFromMessage(message) {
     // Common patterns for prayer time requests
     const patterns = [
         // Basic patterns
-        /jadwal\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,     // "jadwal sholat di jakarta"
-        /waktu\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,      // "waktu sholat di jakarta"
-        /(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,               // "sholat jakarta"
+        /jadwal\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,     // "jadwal sholat di banda aceh"
+        /waktu\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,      // "waktu sholat di banda aceh"
+        /(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,               // "sholat banda aceh"
         
         // Question patterns
-        /kapan\s+(?:waktu\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "kapan sholat di jakarta"
-        /jam\s+(?:berapa\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,   // "jam berapa sholat di jakarta"
+        /kapan\s+(?:waktu\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,  // "kapan sholat di banda aceh"
+        /jam\s+(?:berapa\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,   // "jam berapa sholat di banda aceh"
         
         // Location-first patterns
-        /(?:di\s+)?([a-zA-Z\s]+)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)/i,   // "jakarta jadwal sholat"
+        /(?:di\s+)?([a-zA-Z\s]+?)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)/i,   // "banda aceh jadwal sholat"
         
         // Specific prayer names
-        /(?:waktu\s+)?(?:subuh|dzuhur|ashar|maghrib|isya)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "subuh di jakarta"
+        /(?:waktu\s+)?(?:subuh|dzuhur|ashar|maghrib|isya)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,  // "subuh di banda aceh"
         
         // Informal patterns
-        /(?:mau\s+)?(?:tau|tahu|lihat|cek)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "mau tau sholat jakarta"
-        /(?:tolong\s+)?(?:kasih|beri|tunjukkan)\s+(?:tau|tahu)?\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "tolong kasih tau sholat jakarta"
+        /(?:mau\s+)?(?:tau|tahu|lihat|cek)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,  // "mau tau sholat banda aceh"
+        /(?:tolong\s+)?(?:kasih|beri|tunjukkan)\s+(?:tau|tahu)?\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i,  // "tolong kasih tau sholat banda aceh"
         
         // Time-specific patterns
-        /(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:hari\s+)?(?:ini|besok|sekarang)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "sholat hari ini di jakarta"
+        /(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:hari\s+)?(?:ini|besok|sekarang)\s+(?:di\s+)?([a-zA-Z\s]+?)(?:\s*$)/i,  // "sholat hari ini di banda aceh"
         
         // Direct city mention
-        /^([a-zA-Z\s]+)$/i  // Just city name - should be checked last
+        /^([a-zA-Z\s]+?)(?:\s*$|\s+(?:hari|sekarang|besok))/i  // Just city name - should be checked last
     ];
 
     // Try each pattern
@@ -84,12 +84,9 @@ function extractCityFromMessage(message) {
                 // Remove common words that might be captured
                 .replace(/\b(?:kota|daerah|wilayah|area)\b/gi, '')
                 .replace(/\b(?:sekarang|besok|ini)\b/gi, '')
-                .trim()
-                // Convert spaces to camelCase
-                .replace(/\s+(.)/g, (_, letter) => letter.toUpperCase())
-                // Remove any remaining spaces
-                .replace(/\s/g, '');
+                .trim();
             
+            // Return the city name as is, preserving spaces
             return cityName.toLowerCase();
         }
     }
@@ -436,8 +433,19 @@ module.exports = async function (context, req) {
     context.log('Request body:', JSON.stringify(req.body));
     
     try {
-        // Extract the message data from WhatsApp webhook payload
+        // Extract the data
         const data = req.body;
+        
+        // Check if this is a status update
+        if (data.entry?.[0]?.changes?.[0]?.value?.statuses) {
+            // This is a status update, we can safely ignore it
+            return {
+                status: 200,
+                body: "Status update received"
+            };
+        }
+
+        // Extract the message for regular messages
         const message = data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
         
         if (!message || !message.text?.body) {
