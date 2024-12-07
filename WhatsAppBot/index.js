@@ -296,11 +296,21 @@ async function sendWhatsAppMessage(to, message) {
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
     if (!whatsappToken || !phoneNumberId) {
+        console.error('Missing WhatsApp configuration:', {
+            hasToken: !!whatsappToken,
+            hasPhoneId: !!phoneNumberId
+        });
         throw new Error('Missing WhatsApp configuration. Please check WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID environment variables.');
     }
 
     try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        console.log('Sending WhatsApp message:', {
+            to: to,
+            url: url,
+            messageLength: message?.length
+        });
+
         const response = await axios({
             method: 'POST',
             url: url,
@@ -320,92 +330,190 @@ async function sendWhatsAppMessage(to, message) {
             }
         });
 
+        console.log('WhatsApp API response:', response.data);
         return response.data;
     } catch (error) {
+        console.error('WhatsApp API error:', {
+            status: error.response?.status,
+            data: error.response?.data,
+            message: error.message
+        });
         throw error;
     }
 }
 
-module.exports = async function (context, req) {
-    context.log('🔄 WhatsApp webhook triggered');
+// Function to handle greetings and basic conversation
+function handleGreeting(message) {
+    const msg = message.toLowerCase().trim();
+    
+    // Islamic greetings
+    const islamicGreetings = [
+        'assalamualaikum',
+        'assalamu\'alaikum',
+        'asalamualaikum',
+        'assalam\'alaikum',
+        'asalamu\'alaikum',
+        'assalamualaikum wr wb',
+        'assalamu\'alaikum wr wb',
+        'ass wr wb',
+        'asw'
+    ];
+    
+    // Regular greetings
+    const regularGreetings = [
+        'hi',
+        'halo',
+        'hello',
+        'hay',
+        'hei',
+        'hey'
+    ];
 
-    // Handle WhatsApp verification
-    if (req.method === 'GET') {
-        const mode = req.query['hub.mode'];
-        const token = req.query['hub.verify_token'];
-        const challenge = req.query['hub.challenge'];
+    // Time-based greetings
+    const timeGreetings = [
+        'selamat pagi',
+        'selamat siang',
+        'selamat sore',
+        'selamat malam'
+    ];
 
-        if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-            context.res = { status: 200, body: parseInt(challenge) };
-            return;
-        }
-        context.res = { status: 403, body: 'Forbidden' };
-        return;
+    // Thank you messages
+    const thankYouMessages = [
+        'terima kasih',
+        'makasih',
+        'thanks',
+        'tq',
+        'thx'
+    ];
+
+    // Help messages
+    const helpMessages = [
+        'help',
+        'tolong',
+        'bantuan',
+        'cara',
+        'tutorial',
+        'gimana',
+        'bagaimana'
+    ];
+
+    // Check for Islamic greetings first
+    if (islamicGreetings.some(greeting => msg.includes(greeting))) {
+        return "Wa'alaikumsalam 🙏";
     }
 
+    // Check for regular greetings
+    if (regularGreetings.some(greeting => msg.includes(greeting))) {
+        return "Halo! 👋 Ada yang bisa saya bantu?\n\nUntuk melihat jadwal sholat, ketik:\njadwal sholat [nama kota]\nContoh: jadwal sholat Jakarta";
+    }
+
+    // Check for time-based greetings
+    if (timeGreetings.some(greeting => msg.includes(greeting))) {
+        return `${msg.charAt(0).toUpperCase() + msg.slice(1)}! 👋 Ada yang bisa saya bantu?\n\nUntuk melihat jadwal sholat, ketik:\njadwal sholat [nama kota]\nContoh: jadwal sholat Jakarta`;
+    }
+
+    // Check for thank you messages
+    if (thankYouMessages.some(msg => message.toLowerCase().includes(msg))) {
+        return "Sama-sama! 🙏 Semoga bermanfaat.";
+    }
+
+    // Check for help messages
+    if (helpMessages.some(msg => message.toLowerCase().includes(msg))) {
+        return "Berikut cara menggunakan Sholat Live Bot:\n\n" +
+               "1. Cek jadwal sholat:\n" +
+               "   ketik: jadwal sholat [nama kota]\n" +
+               "   contoh: jadwal sholat Jakarta\n\n" +
+               "2. Tambah kota baru:\n" +
+               "   ketik: tambah kota [nama kota]\n" +
+               "   contoh: tambah kota Cikarang";
+    }
+    
+    return null;
+}
+
+module.exports = async function (context, req) {
+    context.log('WhatsApp Bot trigger function processed a request.');
+    context.log('Request body:', JSON.stringify(req.body));
+    
     try {
-        const body = req.body;
+        // Extract the message data from WhatsApp webhook payload
+        const data = req.body;
+        const message = data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
         
-        if (!body || !body.object || !body.entry || !body.entry[0]) {
-            context.res = { status: 400, body: 'Invalid request body' };
-            return;
+        if (!message || !message.text?.body) {
+            context.log.warn('Invalid message format:', JSON.stringify(data));
+            return {
+                status: 400,
+                body: "Invalid request format"
+            };
         }
 
-        if (body.object === 'whatsapp_business_account') {
-            const changes = body.entry[0].changes[0];
-            if (changes && changes.value && changes.value.messages && changes.value.messages[0]) {
-                const message = changes.value.messages[0];
-                const from = message.from;
-                const messageBody = message.text.body;
+        context.log('Processing message:', message.text.body);
 
-                // Save message to database
-                await saveMessage(message);
+        // Save message to database
+        await saveMessage(message);
+        
+        const messageText = message.text.body.trim();
+        let response;
 
-                // Check if it's a city addition request
-                const cityAddRequest = extractCityAddRequest(messageBody);
-                if (cityAddRequest) {
-                    // Verify and get coordinates
+        // First check for greetings and basic conversation
+        const greetingResponse = handleGreeting(messageText);
+        if (greetingResponse) {
+            response = greetingResponse;
+        } else {
+            // Check for city addition request
+            const cityAddRequest = extractCityAddRequest(messageText);
+            if (cityAddRequest) {
+                try {
                     const cityData = await verifyCityAndGetCoordinates(cityAddRequest);
-                    
-                    if (!cityData) {
-                        await sendWhatsAppMessage(
-                            from,
-                            `❌ Maaf, "${cityAddRequest}" tidak dapat diverifikasi sebagai kota/kabupaten yang valid. Pastikan nama kota sudah benar.`
-                        );
-                        return;
-                    }
-                    
-                    // Add city to database
-                    const result = await addNewCity(cityData);
-                    await sendWhatsAppMessage(from, `✅ Kota ${result.displayName} berhasil ditambahkan!\n\nSekarang Anda bisa mengecek jadwal sholat untuk kota ini dengan mengetik:\n"jadwal sholat ${result.name}"`);
-                    return;
-                }
-
-                // Extract city using our function
-                const extractedCity = extractCityFromMessage(messageBody);
-                let responseMessage;
-
-                if (!extractedCity) {
-                    responseMessage = 'Assalamualaikum 🙏\nMohon maaf, saya tidak bisa mengenali kota yang Anda maksud. Silakan tulis dengan format:\n"Jadwal sholat [nama kota]"\nContoh:\n- Jadwal sholat Jakarta\n- Jadwal sholat di Surabaya\n- Waktu sholat Bandung';
-                } else {
-                    const prayerTimes = await getPrayerTimes(extractedCity);
-                    if (!prayerTimes) {
-                        responseMessage = `Mohon maaf, "${extractedCity}" bukan merupakan nama kota yang valid. Silakan periksa kembali nama kota yang Anda masukkan.`;
+                    if (cityData) {
+                        await addNewCity(cityData);
+                        response = `✅ Kota ${cityData.displayName} berhasil ditambahkan ke database.\n\nUntuk melihat jadwal sholat, silakan ketik:\njadwal sholat ${cityData.displayName}`;
                     } else {
-                        responseMessage = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName, prayerTimes.timezone);
+                        response = `❌ Maaf, kota "${cityAddRequest}" tidak ditemukan. Pastikan nama kota sudah benar dan coba lagi.`;
                     }
+                } catch (error) {
+                    response = `❌ Maaf, terjadi kesalahan saat menambahkan kota. Silakan coba lagi nanti.`;
+                    context.log.error('Error adding city:', error);
                 }
-
-                await sendWhatsAppMessage(from, responseMessage);
-                context.res = { status: 200, body: 'Message processed successfully' };
-                return;
+            } else {
+                // Extract city name for prayer times
+                const cityName = extractCityFromMessage(messageText);
+                if (cityName) {
+                    try {
+                        const prayerTimes = await getPrayerTimes(cityName);
+                        if (!prayerTimes) {
+                            response = `❌ Maaf, jadwal sholat untuk "${cityName}" tidak ditemukan.\n\nJika kota belum terdaftar, Anda bisa menambahkannya dengan mengetik:\ntambah kota ${cityName}`;
+                        } else {
+                            response = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName, prayerTimes.timezone);
+                        }
+                    } catch (error) {
+                        response = "❌ Maaf, terjadi kesalahan saat mengambil jadwal sholat. Silakan coba lagi nanti.";
+                        context.log.error('Error getting prayer times:', error);
+                    }
+                } else {
+                    // Unknown command/request
+                    response = `Maaf, saya tidak mengerti permintaan Anda. 😅\n\nUntuk melihat jadwal sholat, ketik:\njadwal sholat [nama kota]\nContoh: jadwal sholat Jakarta\n\nUntuk bantuan, ketik: help`;
+                }
             }
         }
+
+        // Send the response
+        context.log('Sending response:', response);
+        await sendWhatsAppMessage(message.from, response);
         
-        context.res = { status: 200, body: 'No messages to process' };
+        context.log('Message sent successfully');
+        return {
+            status: 200,
+            body: "Message processed successfully"
+        };
         
     } catch (error) {
         context.log.error('Error processing message:', error);
-        context.res = { status: 500, body: 'Internal server error' };
+        context.log.error('Error stack:', error.stack);
+        return {
+            status: 500,
+            body: "Internal server error"
+        };
     }
 };
