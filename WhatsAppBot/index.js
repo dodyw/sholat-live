@@ -97,9 +97,132 @@ function extractCityFromMessage(message) {
     return null;
 }
 
+// Function to extract city addition request
+function extractCityAddRequest(message) {
+    const msg = message.toLowerCase().trim();
+    
+    const patterns = [
+        /(?:tolong\s+)?(?:tambah(?:kan)?|add)\s+(?:kota|city)?\s+([a-zA-Z\s]+)/i,  // "tambah kota bangkok"
+        /(?:tolong\s+)?(?:daftar(?:kan)?|register)\s+(?:kota|city)?\s+([a-zA-Z\s]+)/i,  // "daftarkan kota bangkok"
+        /(?:kota|city)\s+([a-zA-Z\s]+)\s+(?:belum|tidak|ga|gak)\s+(?:ada|terdaftar)/i,  // "kota bangkok belum ada"
+    ];
+
+    for (const pattern of patterns) {
+        const match = msg.match(pattern);
+        if (match && match[1]) {
+            return match[1].trim();
+        }
+    }
+    
+    return null;
+}
+
+// Function to verify and get city coordinates using OpenStreetMap Nominatim
+async function verifyCityAndGetCoordinates(cityName) {
+    try {
+        // Use Nominatim API to search for the city
+        const response = await axios.get(`https://nominatim.openstreetmap.org/search`, {
+            params: {
+                q: cityName,
+                format: 'json',
+                limit: 1,
+                addressdetails: 1,
+                featuretype: 'city'  // Specifically look for cities
+            },
+            headers: {
+                'User-Agent': 'SholatLive/1.0'
+            }
+        });
+
+        console.log('Nominatim response:', JSON.stringify(response.data, null, 2));
+
+        if (response.data && response.data.length > 0) {
+            const result = response.data[0];
+            const address = result.address;
+            
+            // Accept more location types for major cities
+            if (address.city || address.town || address.county || address.municipality || 
+                address.state || address.province || address.region) {
+                return {
+                    name: cityName.toLowerCase(),
+                    displayName: address.city || address.town || address.state || result.name,
+                    latitude: parseFloat(result.lat),
+                    longitude: parseFloat(result.lon),
+                    aliases: [cityName.toLowerCase()],
+                    type: address.city ? 'city' : 
+                          address.town ? 'town' : 
+                          address.state ? 'state' :
+                          address.province ? 'province' :
+                          'region'
+                };
+            }
+
+            // Fallback for major cities that might be categorized differently
+            const knownCities = {
+                'tokyo': { lat: 35.6762, lon: 139.6503, name: 'Tokyo' },
+                'beijing': { lat: 39.9042, lon: 116.4074, name: 'Beijing' },
+                'hongkong': { lat: 22.3193, lon: 114.1694, name: 'Hong Kong' }
+            };
+
+            const normalizedCity = cityName.toLowerCase().replace(/\s+/g, '');
+            if (knownCities[normalizedCity]) {
+                const city = knownCities[normalizedCity];
+                return {
+                    name: normalizedCity,
+                    displayName: city.name,
+                    latitude: city.lat,
+                    longitude: city.lon,
+                    aliases: [normalizedCity],
+                    type: 'city'
+                };
+            }
+        }
+        return null;
+    } catch (error) {
+        console.error('Error verifying city:', error);
+        return null;
+    }
+}
+
+// Function to add new city to database
+async function addNewCity(cityData) {
+    try {
+        const db = await connectToDatabase();
+        const locations = db.collection('locations');
+        
+        // Check if city already exists
+        const existingCity = await locations.findOne({ 
+            $or: [
+                { name: cityData.name },
+                { aliases: cityData.name }
+            ]
+        });
+        
+        if (existingCity) {
+            return existingCity;
+        }
+        
+        // Insert new city
+        await locations.insertOne(cityData);
+        return cityData;
+    } catch (error) {
+        console.error('Error adding city:', error);
+        return null;
+    }
+}
+
 // Function to get prayer times
 async function getPrayerTimes(cityName) {
-    const coordinates = await getCityCoordinates(cityName);
+    let coordinates = await getCityCoordinates(cityName);
+    
+    // If city not found in database, try to add it
+    if (!coordinates) {
+        const cityData = await verifyCityAndGetCoordinates(cityName);
+        if (cityData) {
+            coordinates = await addNewCity(cityData);
+        }
+    }
+
     if (!coordinates) {
         return null;
     }
@@ -200,6 +323,26 @@ module.exports = async function (context, req) {
                 // Save message to database
                 await saveMessage(message);
 
+                // Check if it's a city addition request
+                const cityAddRequest = extractCityAddRequest(messageBody);
+                if (cityAddRequest) {
+                    // Verify and get coordinates
+                    const cityData = await verifyCityAndGetCoordinates(cityAddRequest);
+                    
+                    if (!cityData) {
+                        await sendWhatsAppMessage(
+                            from,
+                            `❌ Maaf, "${cityAddRequest}" tidak dapat diverifikasi sebagai kota/kabupaten yang valid. Pastikan nama kota sudah benar.`
+                        );
+                        return;
+                    }
+                    
+                    // Add city to database
+                    const result = await addNewCity(cityData);
+                    await sendWhatsAppMessage(from, `✅ Kota ${result.displayName} berhasil ditambahkan!\n\nSekarang Anda bisa mengecek jadwal sholat untuk kota ini dengan mengetik:\n"jadwal sholat ${result.name}"`);
+                    return;
+                }
+
                 // Extract city using our function
                 const extractedCity = extractCityFromMessage(messageBody);
                 let responseMessage;
@@ -209,7 +352,7 @@ module.exports = async function (context, req) {
                 } else {
                     const prayerTimes = await getPrayerTimes(extractedCity);
                     if (!prayerTimes) {
-                        responseMessage = `Mohon maaf, jadwal sholat untuk kota ${extractedCity} belum tersedia dalam database kami. Silakan coba kota lain yang tersedia.`;
+                        responseMessage = `Mohon maaf, "${extractedCity}" bukan merupakan nama kota yang valid. Silakan periksa kembali nama kota yang Anda masukkan.`;
                     } else {
                         responseMessage = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName);
                     }
