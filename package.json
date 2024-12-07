@@ -11,6 +11,7 @@
     "adhan": "^4.4.3",
     "axios": "^1.6.2",
     "dotenv": "^16.4.7",
-    "moment-timezone": "^0.5.43"
+    "moment-timezone": "^0.5.43",
+    "mongodb": "^6.11.0"
   }
 }
