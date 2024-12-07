@@ -60,6 +60,49 @@ const CITY_COORDINATES = {
     sorong: { latitude: -0.8767, longitude: 131.2558 }
 };
 
+// Function to extract city name from message
+function extractCityFromMessage(message) {
+    // Convert message to lowercase for easier matching
+    const msg = message.toLowerCase().trim();
+    
+    // Common patterns for prayer time requests
+    const patterns = [
+        /jadwal\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "jadwal sholat di jakarta"
+        /waktu\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,   // "waktu sholat di jakarta"
+        /(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,            // "sholat jakarta"
+    ];
+
+    // Try each pattern
+    for (const pattern of patterns) {
+        const match = msg.match(pattern);
+        if (match && match[1]) {
+            // Clean up the city name
+            const cityName = match[1].trim()
+                // Convert spaces to camelCase
+                .replace(/\s+(.)/g, (_, letter) => letter.toUpperCase())
+                // Remove any remaining spaces
+                .replace(/\s/g, '');
+            
+            // Check if this city exists in our database
+            if (CITY_COORDINATES[cityName]) {
+                return cityName;
+            }
+            
+            // Try common variations (e.g., "bandung" for "Bandung")
+            const cityKeys = Object.keys(CITY_COORDINATES);
+            const matchedCity = cityKeys.find(city => 
+                city.toLowerCase() === cityName.toLowerCase()
+            );
+            
+            if (matchedCity) {
+                return matchedCity;
+            }
+        }
+    }
+    
+    return null;
+}
+
 module.exports = async function (context, req) {
     context.log('🔄 WhatsApp webhook triggered');
 
@@ -103,87 +146,24 @@ module.exports = async function (context, req) {
         }
 
         if (body.object === 'whatsapp_business_account') {
-            const entry = body.entry[0];
-            if (!entry.changes || !entry.changes[0] || !entry.changes[0].value) {
-                context.log.warn('❌ Invalid entry structure');
-                context.res = {
-                    status: 400,
-                    body: 'Invalid entry structure'
-                };
-                return;
-            }
-
-            const value = entry.changes[0].value;
-            
-            if (value.messages && value.messages.length > 0) {
-                const message = value.messages[0];
-                if (!message.from || !message.text || !message.text.body) {
-                    context.log.warn('❌ Invalid message structure:', JSON.stringify(message));
-                    context.res = {
-                        status: 400,
-                        body: 'Invalid message structure'
-                    };
-                    return;
-                }
-
+            const changes = body.entry[0].changes[0];
+            if (changes && changes.value && changes.value.messages && changes.value.messages[0]) {
+                const message = changes.value.messages[0];
                 const from = message.from;
-                const messageBody = message.text.body.toLowerCase();
-                
-                context.log(`📱 Processing message from ${from}: ${messageBody}`);
+                const messageBody = message.text.body;
 
-                let response = '';
-                let city = 'surabaya'; // Default city
-                let cityInput = ''; // Store original city input
+                // Extract city using our own function instead of Azure OpenAI
+                const extractedCity = extractCityFromMessage(messageBody);
+                let responseMessage;
 
-                if (messageBody.startsWith('jadwal')) {
-                    context.log('🕒 Processing jadwal command');
-                    // Check if city is specified
-                    const parts = messageBody.split(' ');
-                    if (parts.length > 1) {
-                        // Remove 'jadwal' and join the rest for multi-word cities
-                        cityInput = parts.slice(1).join(' ');
-                        // Convert to camelCase (e.g., "banda aceh" -> "bandaAceh")
-                        city = cityInput.replace(/\s+(.)/g, (match, letter) => letter.toUpperCase());
-                        context.log(`🌆 City specified: ${cityInput} (${city})`);
-                    }
-
-                    if (!CITY_COORDINATES[city]) {
-                        context.log.warn(`❌ Invalid city requested: ${city}`);
-                        // Format city names for display
-                        const cityList = Object.keys(CITY_COORDINATES)
-                            .map(c => c.replace(/([A-Z])/g, ' $1').toLowerCase())
-                            .sort()
-                            .join('\n');
-                        
-                        response = `Maaf, kota ${cityInput || city} belum tersedia.\nKota yang tersedia:\n${cityList}`;
-                    } else {
-                        context.log(`🌍 Getting prayer times for ${city}`);
-                        // Get prayer times
-                        const prayerTimes = await getPrayerTimes(city);
-                        response = formatPrayerTimes(prayerTimes, city);
-                        context.log(`✅ Prayer times retrieved for ${city}`);
-                    }
+                if (!extractedCity) {
+                    responseMessage = 'Assalamualaikum 🙏\nMohon maaf, saya tidak bisa mengenali kota yang Anda maksud. Silakan tulis dengan format:\n"Jadwal sholat [nama kota]"\nContoh:\n- Jadwal sholat Jakarta\n- Jadwal sholat di Surabaya\n- Waktu sholat Bandung';
                 } else {
-                    context.log('ℹ️ Sending help message');
-                    response = 'Untuk melihat jadwal sholat, ketik:\n*jadwal* untuk Surabaya\natau\n*jadwal [nama_kota]* untuk kota lain\nContoh: jadwal banda aceh';
+                    const prayerTimes = await getPrayerTimes(extractedCity);
+                    responseMessage = formatPrayerTimes(prayerTimes, extractedCity);
                 }
 
-                context.log('📤 Sending response:', response);
-
-                try {
-                    const result = await sendWhatsAppMessage(from, response);
-                    context.log('✅ WhatsApp API response:', JSON.stringify(result));
-                    context.res = {
-                        status: 200,
-                        body: 'Message sent successfully'
-                    };
-                } catch (error) {
-                    context.log.error('❌ Failed to send WhatsApp message:', error);
-                    context.res = {
-                        status: 500,
-                        body: 'Failed to send message'
-                    };
-                }
+                await sendWhatsAppMessage(from, responseMessage);
             } else {
                 context.log('ℹ️ No messages in the webhook');
                 context.res = {
