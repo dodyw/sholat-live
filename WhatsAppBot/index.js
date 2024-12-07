@@ -3,62 +3,44 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const axios = require('axios');
 const adhan = require('adhan');
 const moment = require('moment-timezone');
+const { MongoClient } = require('mongodb');
 
-// City coordinates mapping for 50 major Indonesian cities
-const CITY_COORDINATES = {
-    surabaya: { latitude: -7.2575, longitude: 112.7521 },
-    jakarta: { latitude: -6.2088, longitude: 106.8456 },
-    medan: { latitude: 3.5952, longitude: 98.6722 },
-    bandung: { latitude: -6.9175, longitude: 107.6191 },
-    semarang: { latitude: -7.0051, longitude: 110.4381 },
-    yogyakarta: { latitude: -7.7971, longitude: 110.3688 },
-    malang: { latitude: -7.9797, longitude: 112.6304 },
-    denpasar: { latitude: -8.6500, longitude: 115.2167 },
-    palembang: { latitude: -2.9761, longitude: 104.7754 },
-    makassar: { latitude: -5.1477, longitude: 119.4327 },
-    tangerang: { latitude: -6.1784, longitude: 106.6319 },
-    depok: { latitude: -6.4025, longitude: 106.7942 },
-    bekasi: { latitude: -6.2349, longitude: 106.9896 },
-    bogor: { latitude: -6.5971, longitude: 106.8060 },
-    batam: { latitude: 1.1301, longitude: 104.0529 },
-    pekanbaru: { latitude: 0.5103, longitude: 101.4478 },
-    padang: { latitude: -0.9471, longitude: 100.4172 },
-    manado: { latitude: 1.4748, longitude: 124.8421 },
-    samarinda: { latitude: -0.4948, longitude: 117.1436 },
-    banjarmasin: { latitude: -3.3186, longitude: 114.5944 },
-    tasikmalaya: { latitude: -7.3274, longitude: 108.2207 },
-    serang: { latitude: -6.1104, longitude: 106.1640 },
-    cirebon: { latitude: -6.7320, longitude: 108.5523 },
-    sukabumi: { latitude: -6.9277, longitude: 106.9300 },
-    jambi: { latitude: -1.6101, longitude: 103.6131 },
-    bengkulu: { latitude: -3.7928, longitude: 102.2608 },
-    pekalongan: { latitude: -6.8898, longitude: 109.6746 },
-    magelang: { latitude: -7.4797, longitude: 110.2177 },
-    tegal: { latitude: -6.8797, longitude: 109.1256 },
-    mataram: { latitude: -8.5833, longitude: 116.1167 },
-    kupang: { latitude: -10.1772, longitude: 123.6070 },
-    ambon: { latitude: -3.6954, longitude: 128.1814 },
-    jayapura: { latitude: -2.5916, longitude: 140.6690 },
-    pontianak: { latitude: -0.0263, longitude: 109.3425 },
-    balikpapan: { latitude: -1.2379, longitude: 116.8529 },
-    palangkaraya: { latitude: -2.2161, longitude: 113.9135 },
-    bandaAceh: { latitude: 5.5483, longitude: 95.3238 },
-    kendari: { latitude: -3.9985, longitude: 122.5127 },
-    palu: { latitude: -0.9003, longitude: 119.8779 },
-    gorontalo: { latitude: 0.5375, longitude: 123.0568 },
-    mamuju: { latitude: -2.6748, longitude: 118.8885 },
-    ternate: { latitude: 0.7963, longitude: 127.3862 },
-    tanjungPinang: { latitude: 0.9179, longitude: 104.4665 },
-    pangkalPinang: { latitude: -2.1316, longitude: 106.1169 },
-    cilegon: { latitude: -6.0174, longitude: 106.0541 },
-    kediri: { latitude: -7.8168, longitude: 112.0184 },
-    pematangSiantar: { latitude: 2.9570, longitude: 99.0681 },
-    bandarLampung: { latitude: -5.3971, longitude: 105.2668 },
-    solo: { latitude: -7.5755, longitude: 110.8243 },
-    purwokerto: { latitude: -7.4206, longitude: 109.2372 },
-    banjarbaru: { latitude: -3.4572, longitude: 114.8313 },
-    sorong: { latitude: -0.8767, longitude: 131.2558 }
-};
+// MongoDB connection
+let cachedDb = null;
+async function connectToDatabase() {
+    if (cachedDb) {
+        return cachedDb;
+    }
+    
+    const client = await MongoClient.connect(process.env.MONGODB_URI);
+    const db = client.db('sholat-live');
+    cachedDb = db;
+    return db;
+}
+
+// Function to get city coordinates from database
+async function getCityCoordinates(cityName) {
+    const db = await connectToDatabase();
+    const locations = db.collection('locations');
+    return await locations.findOne({ 
+        $or: [
+            { name: cityName.toLowerCase() },
+            { aliases: cityName.toLowerCase() }
+        ]
+    });
+}
+
+// Function to save message to database
+async function saveMessage(message) {
+    const db = await connectToDatabase();
+    const messages = db.collection('messages');
+    await messages.insertOne({
+        from: message.from,
+        text: message.text.body,
+        timestamp: new Date(),
+        messageId: message.id
+    });
+}
 
 // Function to extract city name from message
 function extractCityFromMessage(message) {
@@ -67,9 +49,30 @@ function extractCityFromMessage(message) {
     
     // Common patterns for prayer time requests
     const patterns = [
-        /jadwal\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "jadwal sholat di jakarta"
-        /waktu\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,   // "waktu sholat di jakarta"
-        /(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,            // "sholat jakarta"
+        // Basic patterns
+        /jadwal\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,     // "jadwal sholat di jakarta"
+        /waktu\s+(?:sholat|shalat|solat)?\s+(?:di\s+)?([a-zA-Z\s]+)/i,      // "waktu sholat di jakarta"
+        /(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,               // "sholat jakarta"
+        
+        // Question patterns
+        /kapan\s+(?:waktu\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "kapan sholat di jakarta"
+        /jam\s+(?:berapa\s+)?(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,   // "jam berapa sholat di jakarta"
+        
+        // Location-first patterns
+        /(?:di\s+)?([a-zA-Z\s]+)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)/i,   // "jakarta jadwal sholat"
+        
+        // Specific prayer names
+        /(?:waktu\s+)?(?:subuh|dzuhur|ashar|maghrib|isya)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "subuh di jakarta"
+        
+        // Informal patterns
+        /(?:mau\s+)?(?:tau|tahu|lihat|cek)\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "mau tau sholat jakarta"
+        /(?:tolong\s+)?(?:kasih|beri|tunjukkan)\s+(?:tau|tahu)?\s+(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "tolong kasih tau sholat jakarta"
+        
+        // Time-specific patterns
+        /(?:jadwal|waktu)?\s*(?:sholat|shalat|solat)\s+(?:hari\s+)?(?:ini|besok|sekarang)\s+(?:di\s+)?([a-zA-Z\s]+)/i,  // "sholat hari ini di jakarta"
+        
+        // Direct city mention
+        /^([a-zA-Z\s]+)$/i  // Just city name - should be checked last
     ];
 
     // Try each pattern
@@ -77,152 +80,54 @@ function extractCityFromMessage(message) {
         const match = msg.match(pattern);
         if (match && match[1]) {
             // Clean up the city name
-            const cityName = match[1].trim()
+            let cityName = match[1].trim()
+                // Remove common words that might be captured
+                .replace(/\b(?:kota|daerah|wilayah|area)\b/gi, '')
+                .replace(/\b(?:sekarang|besok|ini)\b/gi, '')
+                .trim()
                 // Convert spaces to camelCase
                 .replace(/\s+(.)/g, (_, letter) => letter.toUpperCase())
                 // Remove any remaining spaces
                 .replace(/\s/g, '');
             
-            // Check if this city exists in our database
-            if (CITY_COORDINATES[cityName]) {
-                return cityName;
-            }
-            
-            // Try common variations (e.g., "bandung" for "Bandung")
-            const cityKeys = Object.keys(CITY_COORDINATES);
-            const matchedCity = cityKeys.find(city => 
-                city.toLowerCase() === cityName.toLowerCase()
-            );
-            
-            if (matchedCity) {
-                return matchedCity;
-            }
+            return cityName.toLowerCase();
         }
     }
     
     return null;
 }
 
-module.exports = async function (context, req) {
-    context.log('🔄 WhatsApp webhook triggered');
-
-    // Handle WhatsApp verification
-    if (req.method === 'GET') {
-        const mode = req.query['hub.mode'];
-        const token = req.query['hub.verify_token'];
-        const challenge = req.query['hub.challenge'];
-
-        context.log(`🔒 Webhook verification request - Mode: ${mode}, Token: ${token}, Challenge: ${challenge}`);
-        context.log(`🔑 Expected token: ${process.env.WHATSAPP_VERIFY_TOKEN}`);
-
-        if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-            context.log('👍 Webhook verified successfully');
-            context.res = {
-                status: 200,
-                body: parseInt(challenge)
-            };
-            return;
-        }
-        context.log('🚫 Webhook verification failed');
-        context.res = {
-            status: 403,
-            body: 'Forbidden'
-        };
-        return;
+// Function to get prayer times
+async function getPrayerTimes(cityName) {
+    const coordinates = await getCityCoordinates(cityName);
+    if (!coordinates) {
+        return null;
     }
 
-    try {
-        // Handle incoming messages
-        const body = req.body;
-        context.log('🔄 Webhook request body:', JSON.stringify(body, null, 2));
-        
-        if (!body || !body.object || !body.entry || !body.entry[0]) {
-            context.log.warn('❌ Invalid webhook body structure');
-            context.res = {
-                status: 400,
-                body: 'Invalid request body'
-            };
-            return;
-        }
-
-        if (body.object === 'whatsapp_business_account') {
-            const changes = body.entry[0].changes[0];
-            if (changes && changes.value && changes.value.messages && changes.value.messages[0]) {
-                const message = changes.value.messages[0];
-                const from = message.from;
-                const messageBody = message.text.body;
-
-                // Extract city using our own function instead of Azure OpenAI
-                const extractedCity = extractCityFromMessage(messageBody);
-                let responseMessage;
-
-                if (!extractedCity) {
-                    responseMessage = 'Assalamualaikum 🙏\nMohon maaf, saya tidak bisa mengenali kota yang Anda maksud. Silakan tulis dengan format:\n"Jadwal sholat [nama kota]"\nContoh:\n- Jadwal sholat Jakarta\n- Jadwal sholat di Surabaya\n- Waktu sholat Bandung';
-                } else {
-                    const prayerTimes = await getPrayerTimes(extractedCity);
-                    responseMessage = formatPrayerTimes(prayerTimes, extractedCity);
-                }
-
-                await sendWhatsAppMessage(from, responseMessage);
-            } else {
-                context.log('ℹ️ No messages in the webhook');
-                context.res = {
-                    status: 200,
-                    body: 'No messages to process'
-                };
-            }
-        } else {
-            context.log.warn('❌ Unknown webhook object type:', body.object);
-            context.res = {
-                status: 400,
-                body: 'Unknown webhook object type'
-            };
-        }
-    } catch (error) {
-        context.log.error('❌ Error processing webhook:', error);
-        context.res = {
-            status: 500,
-            body: 'Internal Server Error'
-        };
-    }
-};
-
-async function getPrayerTimes(city) {
-    const coords = CITY_COORDINATES[city];
-    const timezone = 'Asia/Jakarta';
-    const prayerDate = new Date();
-    
-    // Create coordinates
-    const coordinates = new adhan.Coordinates(coords.latitude, coords.longitude);
-    
-    // Get prayer times
+    const date = new Date();
+    const coordinates_calc = new adhan.Coordinates(coordinates.latitude, coordinates.longitude);
     const params = adhan.CalculationMethod.MoonsightingCommittee();
     params.madhab = adhan.Madhab.Shafi;
-    const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
-
+    const prayerTimes = new adhan.PrayerTimes(coordinates_calc, date, params);
+    
     return {
-        fajr: moment(prayerTimes.fajr).tz(timezone).format('HH:mm'),
-        sunrise: moment(prayerTimes.sunrise).tz(timezone).format('HH:mm'),
-        dhuhr: moment(prayerTimes.dhuhr).tz(timezone).format('HH:mm'),
-        asr: moment(prayerTimes.asr).tz(timezone).format('HH:mm'),
-        maghrib: moment(prayerTimes.maghrib).tz(timezone).format('HH:mm'),
-        isha: moment(prayerTimes.isha).tz(timezone).format('HH:mm'),
-        date: moment(prayerDate).tz(timezone).format('YYYY-MM-DD')
+        cityName: coordinates.displayName || cityName,
+        times: prayerTimes
     };
 }
 
-function formatPrayerTimes(timings, city) {
+function formatPrayerTimes(prayerTimes, cityName) {
     const date = moment().tz('Asia/Jakarta').format('dddd, D MMMM YYYY');
-    city = city.charAt(0).toUpperCase() + city.slice(1);
+    cityName = cityName.charAt(0).toUpperCase() + cityName.slice(1);
 
-    return `*Jadwal Sholat ${city}*\n` +
+    return `*Jadwal Sholat ${cityName}*\n` +
            `${date}\n\n` +
-           `Subuh: ${timings.fajr}\n` +
-           `Terbit: ${timings.sunrise}\n` +
-           `Dzuhur: ${timings.dhuhr}\n` +
-           `Ashar: ${timings.asr}\n` +
-           `Maghrib: ${timings.maghrib}\n` +
-           `Isya: ${timings.isha}`;
+           `Subuh: ${moment(prayerTimes.fajr).tz('Asia/Jakarta').format('HH:mm')}\n` +
+           `Terbit: ${moment(prayerTimes.sunrise).tz('Asia/Jakarta').format('HH:mm')}\n` +
+           `Dzuhur: ${moment(prayerTimes.dhuhr).tz('Asia/Jakarta').format('HH:mm')}\n` +
+           `Ashar: ${moment(prayerTimes.asr).tz('Asia/Jakarta').format('HH:mm')}\n` +
+           `Maghrib: ${moment(prayerTimes.maghrib).tz('Asia/Jakarta').format('HH:mm')}\n` +
+           `Isya: ${moment(prayerTimes.isha).tz('Asia/Jakarta').format('HH:mm')}`;
 }
 
 async function sendWhatsAppMessage(to, message) {
@@ -233,17 +138,8 @@ async function sendWhatsAppMessage(to, message) {
         throw new Error('Missing WhatsApp configuration. Please check WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID environment variables.');
     }
 
-    console.log('WhatsApp Configuration:', {
-        phoneNumberId,
-        tokenLength: whatsappToken.length,
-        to,
-        messageLength: message.length
-    });
-
     try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
-        console.log('Making request to:', url);
-
         const response = await axios({
             method: 'POST',
             url: url,
@@ -263,18 +159,72 @@ async function sendWhatsAppMessage(to, message) {
             }
         });
 
-        console.log('WhatsApp API Response:', {
-            status: response.status,
-            data: response.data
-        });
         return response.data;
     } catch (error) {
-        console.error('WhatsApp API Error:', {
-            status: error.response?.status,
-            statusText: error.response?.statusText,
-            data: error.response?.data,
-            message: error.message
-        });
         throw error;
     }
 }
+
+module.exports = async function (context, req) {
+    context.log('🔄 WhatsApp webhook triggered');
+
+    // Handle WhatsApp verification
+    if (req.method === 'GET') {
+        const mode = req.query['hub.mode'];
+        const token = req.query['hub.verify_token'];
+        const challenge = req.query['hub.challenge'];
+
+        if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+            context.res = { status: 200, body: parseInt(challenge) };
+            return;
+        }
+        context.res = { status: 403, body: 'Forbidden' };
+        return;
+    }
+
+    try {
+        const body = req.body;
+        
+        if (!body || !body.object || !body.entry || !body.entry[0]) {
+            context.res = { status: 400, body: 'Invalid request body' };
+            return;
+        }
+
+        if (body.object === 'whatsapp_business_account') {
+            const changes = body.entry[0].changes[0];
+            if (changes && changes.value && changes.value.messages && changes.value.messages[0]) {
+                const message = changes.value.messages[0];
+                const from = message.from;
+                const messageBody = message.text.body;
+
+                // Save message to database
+                await saveMessage(message);
+
+                // Extract city using our function
+                const extractedCity = extractCityFromMessage(messageBody);
+                let responseMessage;
+
+                if (!extractedCity) {
+                    responseMessage = 'Assalamualaikum 🙏\nMohon maaf, saya tidak bisa mengenali kota yang Anda maksud. Silakan tulis dengan format:\n"Jadwal sholat [nama kota]"\nContoh:\n- Jadwal sholat Jakarta\n- Jadwal sholat di Surabaya\n- Waktu sholat Bandung';
+                } else {
+                    const prayerTimes = await getPrayerTimes(extractedCity);
+                    if (!prayerTimes) {
+                        responseMessage = `Mohon maaf, jadwal sholat untuk kota ${extractedCity} belum tersedia dalam database kami. Silakan coba kota lain yang tersedia.`;
+                    } else {
+                        responseMessage = formatPrayerTimes(prayerTimes.times, prayerTimes.cityName);
+                    }
+                }
+
+                await sendWhatsAppMessage(from, responseMessage);
+                context.res = { status: 200, body: 'Message processed successfully' };
+                return;
+            }
+        }
+        
+        context.res = { status: 200, body: 'No messages to process' };
+        
+    } catch (error) {
+        context.log.error('Error processing message:', error);
+        context.res = { status: 500, body: 'Internal server error' };
+    }
+};
