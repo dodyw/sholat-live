@@ -276,7 +276,7 @@ async function getPrayerTimes(cityName) {
 
     const date = new Date();
     const coordinates_calc = new adhan.Coordinates(coordinates.latitude, coordinates.longitude);
-    const params = adhan.CalculationMethod.Singapore();
+    const params = adhan.CalculationMethod.MuslimWorldLeague();
     params.madhab = adhan.Madhab.Shafi;
     const prayerTimes = new adhan.PrayerTimes(coordinates_calc, date, params);
     
