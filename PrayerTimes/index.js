@@ -23,7 +23,7 @@ module.exports = async function (context, req) {
         const coordinates = new adhan.Coordinates(parseFloat(latitude), parseFloat(longitude));
         
         // Get prayer times
-        const params = adhan.CalculationMethod.MoonsightingCommittee();
+        const params = adhan.CalculationMethod.Singapore();
         params.madhab = adhan.Madhab.Shafi;
         const prayerTimes = new adhan.PrayerTimes(coordinates, prayerDate, params);
 

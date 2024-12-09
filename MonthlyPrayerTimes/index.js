@@ -33,7 +33,7 @@ module.exports = async function (context, req) {
 
         // Create coordinates and calculation parameters
         const coordinates = new adhan.Coordinates(latitude, longitude);
-        const params = new adhan.CalculationMethod.MoonsightingCommittee();
+        const params = new adhan.CalculationMethod.Singapore();
         params.madhab = adhan.Madhab.Shafi;
 
         // Get number of days in the month
